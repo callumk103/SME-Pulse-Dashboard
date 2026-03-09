@@ -1,7 +1,11 @@
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime
+import pandas as pd
+import os
+from sheets_backend import (
+    get_gspread_client, get_spreadsheet, ensure_sheets,
+    read_df, read_info, upload_excel, compute_metrics, sample_metrics
+)
 
 # ═══════════════════════════════════════════════════════════
 # SME Pulse — Business Health Dashboard
@@ -9,718 +13,481 @@ from datetime import datetime
 # Callum Kidd · 2026
 # ═══════════════════════════════════════════════════════════
 
-# ATU Brand Colours
-ATU_TEAL = "#00838A"
-ATU_GREEN = "#4CA771"
-ATU_NAVY = "#1B2A4A"
-ATU_RED = "#D94040"
-ATU_AMBER = "#D4930D"
-ATU_BG = "#F7F8FA"
-ATU_WHITE = "#FFFFFF"
-ATU_BORDER = "#E2E6EC"
-ATU_TEXT_MID = "#4A5568"
-ATU_TEXT_MUTED = "#8896AB"
+ATU = {"teal": "#00838A", "green": "#4CA771", "navy": "#1B2A4A", "red": "#D94040",
+       "amber": "#D4930D", "bg": "#F7F8FA", "white": "#FFFFFF", "mid": "#4A5568", "muted": "#8896AB"}
 
-# ── Page config ──
-st.set_page_config(
-    page_title="SME Pulse · Business Health Dashboard",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="SME Pulse", page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 
-# ── Custom CSS for ATU branding ──
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap');
+# ── CSS ──
+st.markdown("""<style>
+@import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap');
+.stApp { background-color: #F7F8FA; }
+[data-testid="stHeader"] { display: none; }
+[data-testid="stSidebar"] { background: white; border-right: 1px solid #E2E6EC; }
+.block-container { padding-top: 0.5rem; }
+.stTabs [data-baseweb="tab-list"] { gap: 4px; background: #F7F8FA; border-radius: 10px; padding: 3px; }
+.stTabs [data-baseweb="tab"] { border-radius: 8px; font-weight: 600; }
+.stTabs [aria-selected="true"] { background: #00838A !important; color: white !important; }
+</style>""", unsafe_allow_html=True)
 
-    /* Global */
-    .stApp {
-        background-color: #F7F8FA;
-        font-family: 'Source Sans 3', sans-serif;
-    }
 
-    /* ATU Brand Bar */
-    .atu-brand-bar {
-        height: 4px;
-        background: linear-gradient(90deg, #00838A, #4CA771, #1B2A4A);
-        margin: -1rem -1rem 0 -1rem;
-        border-radius: 0;
-    }
+# ═══════════════════════════════════════
+# LOGIN SCREEN
+# ═══════════════════════════════════════
+def login_screen():
+    """ATU-branded login page."""
+    # Center the login form
+    col_l, col_m, col_r = st.columns([1, 1.2, 1])
 
-    /* Header */
-    .header-container {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 12px 0 16px;
-        border-bottom: 1px solid #E2E6EC;
-        margin-bottom: 20px;
-    }
-    .header-logo {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-    }
-    .logo-mark {
-        width: 36px; height: 36px;
-        background: #00838A;
-        border-radius: 8px;
-        display: flex; align-items: center; justify-content: center;
-        color: white; font-size: 18px; font-weight: 700;
-        font-family: 'Playfair Display', serif;
-    }
-    .header-title {
-        font-size: 20px; font-weight: 700; color: #1B2A4A;
-        font-family: 'Playfair Display', serif; letter-spacing: -0.3px;
-    }
-    .header-sub {
-        font-size: 11px; color: #00838A; font-weight: 600;
-        text-transform: uppercase; letter-spacing: 1.2px;
-    }
-    .header-desc {
-        font-size: 10px; color: #8896AB; margin-top: -2px;
-    }
+    with col_m:
+        st.markdown("")
+        st.markdown("")
 
-    /* Welcome */
-    .welcome-title {
-        font-size: 24px; font-weight: 700; color: #1B2A4A;
-        font-family: 'Playfair Display', serif; margin: 0;
-    }
-    .welcome-sub {
-        font-size: 13px; color: #4A5568; margin-top: 4px;
-    }
-    .live-badge {
-        display: inline-flex; align-items: center; gap: 6px;
-        font-size: 11px; color: #8896AB;
-    }
-    .live-dot {
-        width: 7px; height: 7px; border-radius: 50%;
-        background: #4CA771; display: inline-block;
-        box-shadow: 0 0 6px rgba(76,167,113,0.6);
-        animation: pulse 2s infinite;
-    }
+        # ATU brand bar
+        st.markdown('<div style="height:4px;background:linear-gradient(90deg,#00838A,#4CA771,#1B2A4A);border-radius:4px;margin-bottom:24px;"></div>', unsafe_allow_html=True)
 
-    /* Cards */
-    .metric-card {
-        background: white;
-        border: 1px solid #E2E6EC;
-        border-radius: 14px;
-        padding: 20px;
-        position: relative;
-        overflow: hidden;
-        box-shadow: 0 1px 3px rgba(27,42,74,0.04);
-    }
-    .metric-card .top-accent {
-        position: absolute; top: 0; left: 0; right: 0; height: 3px;
-    }
-    .card-label {
-        font-size: 11px; color: #8896AB; text-transform: uppercase;
-        letter-spacing: 1px; font-weight: 600; margin-bottom: 4px;
-    }
-    .card-value {
-        font-size: 28px; font-weight: 700; color: #1B2A4A;
-        letter-spacing: -0.5px; font-family: 'Source Sans 3', sans-serif;
-    }
-    .card-sub {
-        font-size: 11px; color: #4A5568; margin-top: 2px;
-    }
+        # Logo and title
+        st.markdown("""
+        <div style="text-align:center; margin-bottom:32px;">
+            <div style="width:60px;height:60px;background:#00838A;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">
+                <span style="color:white;font-size:28px;font-weight:700;font-family:'Playfair Display',serif;">S</span>
+            </div>
+            <h1 style="font-family:'Playfair Display',serif;color:#1B2A4A;font-size:32px;margin:0;">SME Pulse</h1>
+            <p style="color:#8896AB;font-size:14px;margin-top:4px;">Business Health Dashboard</p>
+            <p style="color:#00838A;font-size:11px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;margin-top:8px;">ATLANTIC TECHNOLOGICAL UNIVERSITY · FUNTECH</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-    /* RAG badges */
-    .rag-badge {
-        display: inline-flex; align-items: center; gap: 5px;
-        font-size: 11px; font-weight: 600; padding: 3px 10px;
-        border-radius: 20px;
-    }
-    .rag-green { color: #4CA771; background: #E8F5ED; }
-    .rag-amber { color: #D4930D; background: #FEF7E8; }
-    .rag-red { color: #D94040; background: #FDF0F0; }
+        # Login form card
+        st.markdown("""
+        <div style="background:white;border:1px solid #E2E6EC;border-radius:16px;padding:32px;box-shadow:0 2px 8px rgba(27,42,74,0.06);">
+            <h3 style="font-family:'Source Sans 3',sans-serif;color:#1B2A4A;font-size:18px;margin:0 0 4px;">Welcome back</h3>
+            <p style="color:#8896AB;font-size:13px;margin:0 0 20px;">Sign in to access your dashboard</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-    .rag-dot {
-        width: 7px; height: 7px; border-radius: 50%; display: inline-block;
-    }
+        # Use Streamlit native inputs (these render reliably)
+        email = st.text_input("Email", placeholder="Enter your email", key="login_email")
+        password = st.text_input("Password", type="password", placeholder="Enter your password", key="login_password")
 
-    /* Alert rows */
-    .alert-row {
-        display: flex; align-items: center; gap: 10px;
-        padding: 10px 14px; border-radius: 10px;
-        font-size: 13px; line-height: 1.4; margin-bottom: 8px;
-    }
-    .alert-danger { background: #FDF0F0; border: 1px solid rgba(217,64,64,0.13); color: #D94040; }
-    .alert-warning { background: #FEF7E8; border: 1px solid rgba(212,147,13,0.13); color: #D4930D; }
-    .alert-info { background: #E0F4F4; border: 1px solid rgba(0,131,138,0.13); color: #00838A; }
-    .alert-deviation {
-        font-size: 11px; font-weight: 700; white-space: nowrap;
-        margin-left: auto; opacity: 0.8;
-    }
+        st.markdown("")
 
-    /* Section headers */
-    .section-header {
-        font-size: 13px; font-weight: 700; color: #8896AB;
-        text-transform: uppercase; letter-spacing: 1.5px;
-        margin: 20px 0 12px; font-family: 'Source Sans 3', sans-serif;
-    }
+        if st.button("Sign In", use_container_width=True, type="primary"):
+            if email.lower() == "callum@smepulse.com" and password == "Irishrover":
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Invalid email or password. Please try again.")
 
-    /* Milestone table */
-    .milestone-row {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 11px 0; border-bottom: 1px solid #EEF0F4;
-    }
-    .milestone-row:last-child { border-bottom: none; }
-    .milestone-label {
-        display: flex; align-items: center; gap: 10px;
-        font-size: 13px; font-weight: 500; color: #1B2A4A;
-    }
-    .milestone-values {
-        display: flex; align-items: center; gap: 14px;
-    }
-    .milestone-actual {
-        font-size: 13px; font-weight: 600; color: #1B2A4A;
-    }
-    .milestone-target {
-        font-size: 11px; color: #8896AB;
-    }
+        st.markdown("")
+        st.markdown('<p style="text-align:center;color:#8896AB;font-size:11px;">Demo: Callum@SMEPulse.Com</p>', unsafe_allow_html=True)
 
-    /* Cashflow rows */
-    .cashflow-row {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 11px 0; border-bottom: 1px solid #EEF0F4;
-    }
-    .cashflow-row:last-child { border-bottom: none; }
-    .cf-left { display: flex; align-items: center; gap: 10px; }
-    .cf-dot { width: 7px; height: 7px; border-radius: 50%; }
-    .cf-desc { font-size: 13px; font-weight: 500; color: #1B2A4A; }
-    .cf-date { font-size: 10px; color: #8896AB; }
-    .cf-amount-in { font-size: 13px; font-weight: 600; color: #4CA771; }
-    .cf-amount-out { font-size: 13px; font-weight: 600; color: #D94040; }
+        # Footer
+        st.markdown("")
+        st.markdown("")
+        st.markdown('<p style="text-align:center;color:#8896AB;font-size:11px;">© 2026 SME Pulse · Callum Kidd · Atlantic Technological University</p>', unsafe_allow_html=True)
 
-    /* Action buttons */
-    .action-btn {
-        display: flex; align-items: center; gap: 10px;
-        padding: 10px 12px; margin-bottom: 6px;
-        background: #F7F8FA; border: 1px solid #E2E6EC;
-        border-radius: 9px; width: 100%; cursor: pointer;
-        transition: all 0.2s;
-    }
-    .action-btn:hover {
-        border-color: #00838A; background: rgba(0,131,138,0.06);
-    }
-    .action-label { font-size: 12px; font-weight: 600; color: #1B2A4A; }
-    .action-desc { font-size: 10px; color: #8896AB; }
 
-    /* Snapshot card */
-    .snapshot-card {
-        background: rgba(0,131,138,0.06);
-        border: 1px solid rgba(0,131,138,0.1);
-        border-radius: 14px; padding: 18px;
-    }
-    .snapshot-title {
-        font-size: 10px; color: #00838A; text-transform: uppercase;
-        letter-spacing: 1.1px; font-weight: 600; margin-bottom: 10px;
-    }
-    .snapshot-row {
-        display: flex; justify-content: space-between; align-items: center;
-        padding: 5px 0;
-    }
-    .snapshot-label { font-size: 11px; color: #4A5568; }
-    .snapshot-value { font-size: 12px; font-weight: 600; color: #1B2A4A; }
+# ═══════════════════════════════════════
+# CHECK AUTH
+# ═══════════════════════════════════════
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
 
-    /* Footer */
-    .footer {
-        margin-top: 32px; padding-top: 16px;
-        border-top: 1px solid #E2E6EC;
-        display: flex; justify-content: space-between;
-        font-size: 11px; color: #8896AB;
-    }
-    .footer-brand { font-weight: 600; color: #00838A; }
+if not st.session_state["authenticated"]:
+    login_screen()
+    st.stop()
 
-    /* Streamlit overrides */
-    .stMetric { background: transparent; }
-    div[data-testid="stMetricValue"] { font-family: 'Source Sans 3', sans-serif; }
-    header[data-testid="stHeader"] { background: transparent; }
-    .block-container { padding-top: 1rem; }
 
-    /* Plotly chart backgrounds */
-    .js-plotly-plot .plotly .main-svg { background: transparent !important; }
+# ═══════════════════════════════════════
+# SIDEBAR
+# ═══════════════════════════════════════
+with st.sidebar:
+    st.markdown("### 📊 SME Pulse")
+    st.caption("Data Management")
+    st.divider()
 
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.35; }
-    }
+    gc = get_gspread_client()
+    sp = None
+    connected = False
 
-    /* Hide Streamlit branding */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+    if gc:
+        sheet_name = st.text_input("Sheet Name", value="SME Pulse Data")
+        sp = get_spreadsheet(gc, sheet_name)
+        if sp:
+            ensure_sheets(sp)
+            connected = True
+            st.success("✓ Connected to Google Sheets")
+        else:
+            st.warning(f'Sheet "{sheet_name}" not found. Create it and share with service account.')
+    else:
+        st.info("📋 Demo mode — no Google Sheets")
 
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 4px;
-        background: #F7F8FA;
-        border-radius: 10px;
-        padding: 3px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        font-weight: 600;
-        font-size: 13px;
-        padding: 8px 16px;
-        font-family: 'Source Sans 3', sans-serif;
-    }
-    .stTabs [aria-selected="true"] {
-        background: #00838A !important;
-        color: white !important;
-    }
-</style>
+    st.divider()
+
+    # Template download
+    st.markdown("**📥 Template**")
+    tpl = os.path.join(os.path.dirname(__file__), "SME_Pulse_Template.xlsx")
+    if os.path.exists(tpl):
+        with open(tpl, "rb") as f:
+            st.download_button("⬇ Download Template", f, "SME_Pulse_Template.xlsx",
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             use_container_width=True)
+
+    st.divider()
+
+    # Upload
+    st.markdown("**📤 Upload Data**")
+    up = st.file_uploader("Upload template", type=["xlsx", "xls"])
+
+    if up and connected:
+        if st.button("📊 Upload to Sheets", use_container_width=True, type="primary"):
+            with st.spinner("Uploading..."):
+                res = upload_excel(sp, up)
+                if res["success"]:
+                    st.success(f"✓ {', '.join(res['success'])}")
+                if res["errors"]:
+                    st.error(f"✗ {', '.join(res['errors'])}")
+                st.rerun()
+    elif up and not connected:
+        if st.button("📊 Use for session", use_container_width=True):
+            try:
+                xls = pd.ExcelFile(up)
+                if "Monthly Financials" in xls.sheet_names:
+                    st.session_state["l_fin"] = pd.read_excel(xls, "Monthly Financials", header=3)
+                if "Cash Flow" in xls.sheet_names:
+                    st.session_state["l_cf"] = pd.read_excel(xls, "Cash Flow", header=3)
+                if "Targets" in xls.sheet_names:
+                    st.session_state["l_tgt"] = pd.read_excel(xls, "Targets", header=3)
+                if "Business Info" in xls.sheet_names:
+                    di = pd.read_excel(xls, "Business Info", header=2)
+                    st.session_state["l_info"] = {str(r.iloc[0]): str(r.iloc[1]) for _, r in di.iterrows() if str(r.iloc[0]) not in ("", "nan")}
+                st.success("✓ Loaded")
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+
+    st.divider()
+    view_mode = st.radio("View", ["Owner", "Board"])
+
+    st.divider()
+    if st.button("🚪 Sign Out", use_container_width=True):
+        st.session_state["authenticated"] = False
+        st.rerun()
+
+    st.caption("SME Pulse · ATU · 2026")
+
+
+# ═══════════════════════════════════════
+# LOAD DATA
+# ═══════════════════════════════════════
+if connected:
+    fin = read_df(sp, "Monthly Financials")
+    cf = read_df(sp, "Cash Flow")
+    tgt = read_df(sp, "Targets")
+    info = read_info(sp)
+    src = "sheets"
+elif "l_fin" in st.session_state:
+    fin = st.session_state.get("l_fin", pd.DataFrame())
+    cf = st.session_state.get("l_cf", pd.DataFrame())
+    tgt = st.session_state.get("l_tgt", pd.DataFrame())
+    info = st.session_state.get("l_info", {})
+    src = "upload"
+else:
+    fin = pd.DataFrame()
+    cf = pd.DataFrame()
+    tgt = pd.DataFrame()
+    info = {}
+    src = "demo"
+
+M = compute_metrics(fin, cf, tgt, info)
+
+
+# ═══════════════════════════════════════
+# HEADER
+# ═══════════════════════════════════════
+# Brand bar
+st.markdown('<div style="height:4px;background:linear-gradient(90deg,#00838A,#4CA771,#1B2A4A);margin:-0.5rem -1rem 0 -1rem;border-radius:0;"></div>', unsafe_allow_html=True)
+
+h1, h2 = st.columns([7, 3])
+with h1:
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:12px;padding:12px 0;">
+        <div style="width:36px;height:36px;background:#00838A;border-radius:8px;display:flex;align-items:center;justify-content:center;">
+            <span style="color:white;font-size:17px;font-weight:700;font-family:'Playfair Display',serif;">S</span>
+        </div>
+        <div>
+            <span style="font-size:18px;font-weight:700;color:#1B2A4A;font-family:'Playfair Display',serif;">SME Pulse</span>
+            <span style="font-size:10px;color:#00838A;font-weight:600;text-transform:uppercase;letter-spacing:1.2px;margin-left:8px;">ATU FunTech</span>
+            <div style="font-size:10px;color:#8896AB;">Business Health Dashboard</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+with h2:
+    labels = {"sheets": ("● Live · Google Sheets", ATU["green"]), "upload": ("● Session data", ATU["amber"]), "demo": ("● Demo data", ATU["muted"])}
+    lbl, clr = labels[src]
+    st.markdown(f'<div style="text-align:right;padding-top:16px;"><span style="color:{clr};font-weight:600;font-size:12px;">{lbl}</span></div>', unsafe_allow_html=True)
+
+st.divider()
+
+# Welcome
+st.markdown(f"""
+<h1 style="font-family:'Playfair Display',serif;color:#1B2A4A;font-size:24px;margin:0;">Good morning, {M['owner']}</h1>
+<p style="color:#4A5568;font-size:13px;margin-top:4px;">{"Board summary" if view_mode == "Board" else "Operational overview"} · {M['latest_month']}</p>
 """, unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════
-# ATU BRAND BAR
-# ══════════════════════════════════════════════
-st.markdown('<div class="atu-brand-bar"></div>', unsafe_allow_html=True)
+st.markdown("")
 
 
-# ══════════════════════════════════════════════
-# HEADER
-# ══════════════════════════════════════════════
-header_col1, header_col2 = st.columns([8, 4])
-with header_col1:
-    st.markdown("""
-    <div class="header-logo">
-        <div class="logo-mark">S</div>
-        <div>
-            <span class="header-title">SME Pulse</span>
-            <span class="header-sub" style="margin-left: 8px;">ATU FunTech</span>
-            <div class="header-desc">Business Health Dashboard</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-with header_col2:
-    st.markdown("""
-    <div style="text-align: right; padding-top: 8px;">
-        <span class="live-badge">
-            Live · updated 2 min ago
-            <span class="live-dot"></span>
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown('<hr style="margin: 8px 0 16px; border: none; border-top: 1px solid #E2E6EC;">', unsafe_allow_html=True)
+# ═══════════════════════════════════════
+# DASHBOARD TABS
+# ═══════════════════════════════════════
+tab_ov, tab_cf, tab_rv, tab_al, tab_dt = st.tabs(["◉ Overview", "◈ Cash Flow", "◆ Revenue", "△ Alerts", "⚙ Data"])
 
 
-# ══════════════════════════════════════════════
-# VIEW TOGGLE
-# ══════════════════════════════════════════════
-view_col1, view_col2 = st.columns([8, 4])
-with view_col1:
-    st.markdown(f"""
-    <h1 class="welcome-title">Good morning, Liam</h1>
-    <p class="welcome-sub">Here's how your business is doing · <span style="color: #8896AB;">March 9, 2026</span></p>
-    """, unsafe_allow_html=True)
-with view_col2:
-    view_mode = st.radio("View", ["Owner", "Board"], horizontal=True, label_visibility="collapsed")
+# ═══ OVERVIEW TAB ═══
+with tab_ov:
 
+    # Health + Runway + Alerts row
+    c1, c2, c3 = st.columns([1, 1, 2.5])
 
-# ══════════════════════════════════════════════
-# TABS
-# ══════════════════════════════════════════════
-tab_overview, tab_cashflow, tab_revenue, tab_alerts = st.tabs(["◉ Overview", "◈ Cash Flow", "◆ Revenue", "△ Alerts"])
+    with c1:
+        hs = M["health_score"]
+        hc = ATU["green"] if hs >= 70 else ATU["amber"] if hs >= 50 else ATU["red"]
+        hl = "Healthy" if hs >= 70 else "Caution" if hs >= 50 else "At Risk"
 
-with tab_overview:
+        st.markdown(f"##### 🏥 Health Score")
+        fig = go.Figure(go.Indicator(mode="gauge+number", value=hs,
+            number={"font": {"size": 48, "color": hc}},
+            gauge={"axis": {"range": [0, 100], "visible": False},
+                   "bar": {"color": hc, "thickness": 0.8},
+                   "bgcolor": "#EEF0F4", "borderwidth": 0}))
+        fig.update_layout(height=180, margin=dict(l=20, r=20, t=30, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        if hs >= 70:
+            st.success(f"● {hl}")
+        elif hs >= 50:
+            st.warning(f"● {hl}")
+        else:
+            st.error(f"● {hl}")
 
-    # ── HEALTH SCORE + RUNWAY + ALERTS ──
-    col_health, col_runway, col_alerts = st.columns([1, 1, 2.5])
+    with c2:
+        rw = M["runway_months"]
+        st.markdown("##### 💰 Cash Runway")
+        st.markdown("")
+        rc = ATU["green"] if rw >= 12 else ATU["amber"] if rw >= 6 else ATU["red"]
+        st.markdown(f'<div style="text-align:center;padding:20px 0;"><div style="font-size:48px;font-weight:700;color:{rc};">{rw}</div><div style="font-size:13px;color:#4A5568;">months remaining</div></div>', unsafe_allow_html=True)
+        if rw >= 12:
+            st.success("● On Track — Target: 12+ months")
+        elif rw >= 6:
+            st.warning("● Watch — Target: 12+ months")
+        else:
+            st.error("● At Risk — Target: 12+ months")
 
-    with col_health:
-        st.markdown('<div class="metric-card"><div class="top-accent" style="background: linear-gradient(90deg, #4CA771, transparent);"></div>', unsafe_allow_html=True)
-        st.markdown('<div class="card-label" style="text-align:center;">Business Health Score</div>', unsafe_allow_html=True)
-
-        fig_health = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=74,
-            number={"font": {"size": 42, "color": ATU_GREEN, "family": "Source Sans 3"}},
-            gauge={
-                "axis": {"range": [0, 100], "visible": False},
-                "bar": {"color": ATU_GREEN, "thickness": 0.82},
-                "bgcolor": "#EEF0F4",
-                "borderwidth": 0,
-                "steps": [],
-                "shape": "angular",
-            },
-        ))
-        fig_health.update_layout(
-            height=160, margin=dict(l=20, r=20, t=30, b=10),
+        # Small sparkline
+        fig_rw = go.Figure(go.Scatter(y=[14, 13, 12, 11, 10.5, 9.8, 9.2, 8.6, rw],
+            mode="lines", line=dict(color=rc, width=2, shape="spline"),
+            fill="tozeroy", fillcolor=f"{rc}18"))
+        fig_rw.update_layout(height=50, margin=dict(l=0, r=0, t=0, b=0),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font={"family": "Source Sans 3"},
-        )
-        st.plotly_chart(fig_health, use_container_width=True, config={"displayModeBar": False})
+            xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=False)
+        st.plotly_chart(fig_rw, use_container_width=True, config={"displayModeBar": False})
 
-        st.markdown("""
-        <div style="text-align:center;">
-            <span style="font-size:12px; color:#4CA771; font-weight:600;">● Healthy</span><br>
-            <span style="font-size:10px; color:#8896AB;">+3 pts vs last month</span>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown("##### ⚠ Deviation Alerts")
+        if M["expenses_change"] > 10:
+            st.error(f"Costs up {M['expenses_change']:.0f}% vs last month — review spending")
+        if M["runway_months"] < 12:
+            st.warning(f"Runway at {M['runway_months']} months — below 12-month target")
+        if M["revenue_change"] > 0:
+            st.info(f"Revenue trending +{M['revenue_change']:.1f}% above last month")
+        if M["margin"] < 20:
+            st.warning(f"Profit margin at {M['margin']:.1f}% — consider cost review")
+        if M["revenue_change"] < -5:
+            st.error(f"Revenue declined {abs(M['revenue_change']):.1f}% — investigate")
 
-    with col_runway:
-        st.markdown('<div class="metric-card"><div class="top-accent" style="background: linear-gradient(90deg, #D4930D, transparent);"></div>', unsafe_allow_html=True)
-        st.markdown('<div class="card-label" style="text-align:center;">Cash Runway</div>', unsafe_allow_html=True)
-        st.markdown(f"""
-        <div style="text-align:center; padding: 16px 0 8px;">
-            <div style="font-size:42px; font-weight:700; color:{ATU_AMBER};">8.2</div>
-            <div style="font-size:12px; color:{ATU_TEXT_MID}; margin-top:-4px;">months remaining</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown('<div style="text-align:center;"><span class="rag-badge rag-amber"><span class="rag-dot" style="background:#D4930D;"></span> Watch</span></div>', unsafe_allow_html=True)
-        st.markdown(f'<div style="text-align:center; margin-top:6px;"><span style="font-size:10px; color:{ATU_TEXT_MUTED};">Target: 12+ months</span></div>', unsafe_allow_html=True)
+    st.divider()
 
-        runway_data = [14, 13, 12, 11, 10.5, 9.8, 9.2, 8.6, 8.2]
-        fig_runway = go.Figure(go.Scatter(
-            y=runway_data, mode="lines",
-            line=dict(color=ATU_AMBER, width=2, shape="spline"),
-            fill="tozeroy", fillcolor="rgba(212,147,13,0.08)",
-        ))
-        fig_runway.update_layout(
-            height=50, margin=dict(l=0, r=0, t=0, b=0),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            xaxis=dict(visible=False), yaxis=dict(visible=False),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_runway, use_container_width=True, config={"displayModeBar": False})
-        st.markdown('</div>', unsafe_allow_html=True)
+    # KPI Cards
+    st.markdown("##### Key Performance Indicators")
 
-    with col_alerts:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.markdown("""
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <span class="card-label">Deviation Alerts</span>
-            <span class="rag-badge rag-red">3 active</span>
-        </div>
-        <div class="alert-row alert-danger">
-            <span>⚠</span>
-            <span>Onboarding cost per customer hit €1,800 — target is €1,200</span>
-            <span class="alert-deviation">+50% vs plan</span>
-        </div>
-        <div class="alert-row alert-warning">
-            <span>◈</span>
-            <span>New customer acquisitions at 6 of 10 target with 3 weeks left</span>
-            <span class="alert-deviation">-40% vs plan</span>
-        </div>
-        <div class="alert-row alert-danger">
-            <span>⚠</span>
-            <span>Supplier payment of €4,200 due Mar 12 — cash buffer tight</span>
-            <span class="alert-deviation">3 days</span>
-        </div>
-        <div class="alert-row alert-info">
-            <span>ℹ</span>
-            <span>Revenue trending 8% above forecast — consider restocking inventory</span>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    k1, k2, k3, k4 = st.columns(4)
 
+    with k1:
+        st.metric("💰 Cash Balance", f"€{M['cash_balance']:,.0f}", "Available now")
+        fig = go.Figure(go.Scatter(y=M["rev_hist"], mode="lines", line=dict(color=ATU["teal"], width=2, shape="spline"), fill="tozeroy", fillcolor=f"{ATU['teal']}14"))
+        fig.update_layout(height=50, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    # ── KPI CARDS ──
-    st.markdown('<div class="section-header">Key Performance Indicators</div>', unsafe_allow_html=True)
+    with k2:
+        delta = f"{'+' if M['revenue_change']>=0 else ''}{M['revenue_change']:.1f}% vs prev"
+        st.metric("📈 Monthly Revenue", f"€{M['revenue']:,.0f}", delta)
+        fig = go.Figure(go.Scatter(y=M["rev_hist"], mode="lines", line=dict(color=ATU["green"], width=2, shape="spline"), fill="tozeroy", fillcolor=f"{ATU['green']}14"))
+        fig.update_layout(height=50, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    with k3:
+        st.metric("📊 Total Expenses", f"€{M['expenses']:,.0f}", f"+{M['expenses_change']:.1f}% vs prev", delta_color="inverse")
+        fig = go.Figure(go.Scatter(y=M["exp_hist"], mode="lines", line=dict(color=ATU["red"], width=2, shape="spline"), fill="tozeroy", fillcolor=f"{ATU['red']}14"))
+        fig.update_layout(height=50, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    kpis = [
-        {"col": kpi1, "label": "Cash Balance", "value": "€23,450", "sub": "Available now", "trend": "↑ +€2,180 this week", "trend_color": ATU_GREEN, "color": ATU_TEAL, "data": [42, 38, 45, 41, 52, 48, 55, 60, 58, 63, 67, 72], "rag": "green"},
-        {"col": kpi2, "label": "Monthly Revenue", "value": "€45,200", "sub": "Feb 2026 · MRR", "trend": "↑ +8.2% vs Jan", "trend_color": ATU_GREEN, "color": ATU_GREEN, "data": [32, 35, 34, 38, 36, 41, 39, 43, 42, 45, 48, 51], "rag": "green"},
-        {"col": kpi3, "label": "Total Expenses", "value": "€31,800", "sub": "Feb 2026", "trend": "↓ +12% vs Jan", "trend_color": ATU_RED, "color": ATU_RED, "data": [22, 24, 23, 26, 25, 28, 27, 30, 29, 32, 33, 34], "rag": "amber"},
-        {"col": kpi4, "label": "Net Profit", "value": "€13,400", "sub": "29.6% gross margin", "trend": "↑ +2.1% margin", "trend_color": ATU_GREEN, "color": ATU_NAVY, "data": [10, 11, 10, 12, 11, 13, 12, 13, 13, 13, 14, 15], "rag": "green"},
-    ]
+    with k4:
+        st.metric("✦ Net Profit", f"€{M['profit']:,.0f}", f"{M['margin']:.1f}% margin")
+        profit_hist = [r - e for r, e in zip(M["rev_hist"], M["exp_hist"])]
+        fig = go.Figure(go.Scatter(y=profit_hist, mode="lines", line=dict(color=ATU["navy"], width=2, shape="spline"), fill="tozeroy", fillcolor=f"{ATU['navy']}14"))
+        fig.update_layout(height=50, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    for kpi in kpis:
-        with kpi["col"]:
-            rag_class = f"rag-{kpi['rag']}"
-            rag_label = {"green": "On Track", "amber": "Watch", "red": "At Risk"}[kpi["rag"]]
+    st.divider()
 
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="top-accent" style="background: linear-gradient(90deg, {kpi['color']}, transparent);"></div>
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span class="card-label">{kpi['label']}</span>
-                    <span class="rag-badge {rag_class}"><span class="rag-dot" style="background:{kpi['trend_color'] if kpi['rag'] != 'amber' else ATU_AMBER};"></span> {rag_label}</span>
-                </div>
-                <div class="card-value">{kpi['value']}</div>
-                <div class="card-sub">{kpi['sub']}</div>
-                <div style="font-size:11px; color:{kpi['trend_color']}; font-weight:600; margin-top:3px;">{kpi['trend']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            fig_spark = go.Figure(go.Scatter(
-                y=kpi["data"], mode="lines",
-                line=dict(color=kpi["color"], width=2, shape="spline"),
-                fill="tozeroy", fillcolor=f"rgba{tuple(int(kpi['color'].lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.08,)}",
-            ))
-            fig_spark.update_layout(
-                height=50, margin=dict(l=0, r=0, t=0, b=0),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(visible=False), yaxis=dict(visible=False),
-                showlegend=False,
-            )
-            st.plotly_chart(fig_spark, use_container_width=True, config={"displayModeBar": False})
-
-
-    # ── MILESTONES ──
-    st.markdown('<div class="section-header">Operational Milestones</div>', unsafe_allow_html=True)
+    # Milestones
+    st.markdown("##### Operational Milestones")
 
     milestones = [
-        {"label": "Revenue Target", "status": "green", "actual": "€45.2K", "target": "€43K"},
-        {"label": "New Customers", "status": "amber", "actual": "6", "target": "10"},
-        {"label": "Gross Margin", "status": "green", "actual": "29.6%", "target": "28%"},
-        {"label": "Churn Rate", "status": "green", "actual": "2.1%", "target": "<5%"},
-        {"label": "Onboarding Costs", "status": "red", "actual": "€1,800", "target": "€1,200"},
-        {"label": "Cash Runway", "status": "amber", "actual": "8.2 mo", "target": ">12 mo"},
+        ("Revenue Target", f"€{M['revenue']:,.0f}", "€43,000", M["revenue"] >= 43000),
+        ("Gross Margin", f"{M['margin']:.1f}%", "28%", M["margin"] >= 28),
+        ("Cash Runway", f"{M['runway_months']} mo", ">12 mo", M["runway_months"] >= 12),
+        ("Expenses Change", f"{M['expenses_change']:+.1f}%", "<5%", M["expenses_change"] < 5),
     ]
 
-    rag_colors = {"green": ATU_GREEN, "amber": ATU_AMBER, "red": ATU_RED}
-    rag_labels = {"green": "On Track", "amber": "Watch", "red": "At Risk"}
+    for label, actual, target, on_track in milestones:
+        col_a, col_b, col_c, col_d = st.columns([3, 2, 2, 1.5])
+        with col_a:
+            st.markdown(f"**{label}**")
+        with col_b:
+            st.markdown(f"`{actual}`")
+        with col_c:
+            st.caption(f"Target: {target}")
+        with col_d:
+            if on_track:
+                st.success("On Track")
+            else:
+                st.warning("Watch")
 
-    milestone_html = '<div class="metric-card">'
-    for m in milestones:
-        rc = rag_colors[m["status"]]
-        rl = rag_labels[m["status"]]
-        milestone_html += f"""
-        <div class="milestone-row">
-            <div class="milestone-label">
-                <span class="rag-dot" style="background:{rc};"></span>
-                {m['label']}
-            </div>
-            <div class="milestone-values">
-                <span class="milestone-actual">{m['actual']}</span>
-                <span class="milestone-target">/ {m['target']}</span>
-                <span class="rag-badge rag-{m['status']}"><span class="rag-dot" style="background:{rc};"></span> {rl}</span>
-            </div>
-        </div>
-        """
-    milestone_html += '</div>'
-    st.markdown(milestone_html, unsafe_allow_html=True)
+    st.divider()
 
+    # Charts
+    ch1, ch2 = st.columns(2)
 
-    # ── CHARTS ROW ──
-    st.markdown("", unsafe_allow_html=True)
-    chart1, chart2 = st.columns(2)
-
-    with chart1:
-        st.markdown('<div class="section-header">Revenue Trends + Forecast</div>', unsafe_allow_html=True)
-        months = ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar*", "Apr*"]
-        values = [34, 31, 42, 38, 45, 48, 51]
-        colors = [ATU_GREEN] * 5 + ["rgba(76,167,113,0.35)"] * 2
-
-        fig_rev = go.Figure(go.Bar(
-            x=months, y=values,
-            marker_color=colors,
-            marker_line_width=0,
-            text=[f"€{v}K" for v in values],
-            textposition="outside",
-            textfont=dict(size=10, color=ATU_TEXT_MID),
-        ))
-        fig_rev.update_layout(
-            height=260, margin=dict(l=0, r=0, t=10, b=30),
+    with ch1:
+        st.markdown("##### Revenue Trends")
+        rv = [v / 1000 for v in M["rev_hist"]]
+        fig = go.Figure(go.Bar(x=M["month_labels"], y=rv, marker_color=ATU["green"],
+            text=[f"€{v:.0f}K" for v in rv], textposition="outside",
+            textfont=dict(size=10, color=ATU["mid"])))
+        fig.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=30),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            xaxis=dict(tickfont=dict(size=10, color=ATU_TEXT_MUTED)),
-            yaxis=dict(visible=False),
-            showlegend=False,
-            bargap=0.35,
-        )
-        st.plotly_chart(fig_rev, use_container_width=True, config={"displayModeBar": False})
-        st.caption("*Forecast months shown with lighter bars. Revenue trending +14% over 6 months.")
+            xaxis=dict(tickfont=dict(size=11)), yaxis=dict(visible=False),
+            showlegend=False, bargap=0.35)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    with chart2:
-        st.markdown('<div class="section-header">Cost Breakdown</div>', unsafe_allow_html=True)
-        labels = ["Staff", "Rent", "Suppliers", "Other"]
-        values = [42, 22, 24, 12]
-        colors = [ATU_TEAL, ATU_GREEN, ATU_NAVY, ATU_TEXT_MUTED]
-
-        fig_cost = go.Figure(go.Pie(
-            labels=labels, values=values,
-            hole=0.62,
-            marker=dict(colors=colors, line=dict(color="white", width=2)),
-            textinfo="label+percent",
-            textfont=dict(size=12, family="Source Sans 3"),
-            hoverinfo="label+value+percent",
-        ))
-        fig_cost.update_layout(
-            height=260, margin=dict(l=10, r=10, t=10, b=10),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            showlegend=False,
-            font=dict(family="Source Sans 3"),
-        )
-        st.plotly_chart(fig_cost, use_container_width=True, config={"displayModeBar": False})
-        st.caption("Staff costs remain the largest expense at 42%. Supplier costs +3% QoQ.")
+    with ch2:
+        st.markdown("##### Cost Breakdown")
+        fig = go.Figure(go.Pie(
+            labels=["Staff", "Rent", "Suppliers", "Other"],
+            values=[M["staff_pct"], M["rent_pct"], M["supplier_pct"], M["other_pct"]],
+            hole=0.6, marker=dict(colors=[ATU["teal"], ATU["green"], ATU["navy"], ATU["muted"]],
+            line=dict(color="white", width=2)),
+            textinfo="label+percent", textfont=dict(size=12)))
+        fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-    # ── CASHFLOW + SIDEBAR ──
-    cf_col, action_col = st.columns([2, 1])
+# ═══ CASH FLOW TAB ═══
+with tab_cf:
+    st.markdown("##### Cash Flow Timeline")
 
-    with cf_col:
-        st.markdown('<div class="section-header">Cash Flow Forecast</div>', unsafe_allow_html=True)
+    if not cf.empty:
+        for _, row in cf.iterrows():
+            ft = str(row.get("Type", "")).strip().lower()
+            is_in = ft == "in"
+            amt = float(row.get("Amount", 0)) if pd.notna(row.get("Amount")) else 0
 
-        cashflow_items = [
-            {"date": "Mar 10", "desc": "Staff wages", "amount": "-€8,400", "type": "out"},
-            {"date": "Mar 12", "desc": "Client payment — Galway Hotel Group", "amount": "+€6,200", "type": "in"},
-            {"date": "Mar 13", "desc": "Supplier payment — Atlantic Goods", "amount": "-€4,200", "type": "out"},
-            {"date": "Mar 18", "desc": "Client payment — Bay Fitness", "amount": "+€3,800", "type": "in"},
-            {"date": "Mar 20", "desc": "Rent payment", "amount": "-€2,600", "type": "out"},
-            {"date": "Mar 25", "desc": "Client payment — West Pro Services", "amount": "+€5,100", "type": "in"},
-        ]
-
-        cf_html = '<div class="metric-card">'
-        for item in cashflow_items:
-            dot_color = ATU_GREEN if item["type"] == "in" else ATU_RED
-            amount_class = "cf-amount-in" if item["type"] == "in" else "cf-amount-out"
-            cf_html += f"""
-            <div class="cashflow-row">
-                <div class="cf-left">
-                    <span class="cf-dot" style="background:{dot_color};"></span>
-                    <div>
-                        <div class="cf-desc">{item['desc']}</div>
-                        <div class="cf-date">{item['date']}</div>
-                    </div>
-                </div>
-                <span class="{amount_class}">{item['amount']}</span>
-            </div>
-            """
-        cf_html += '</div>'
-        st.markdown(cf_html, unsafe_allow_html=True)
-
-    with action_col:
-        st.markdown('<div class="section-header">Quick Actions</div>', unsafe_allow_html=True)
-
-        actions = [
-            {"label": "Export Report", "icon": "📄", "desc": "Board pack PDF" if view_mode == "Board" else "Download summary"},
-            {"label": "Share with Accountant", "icon": "👤", "desc": "Send latest data"},
-            {"label": "Set Alert Threshold", "icon": "🔔", "desc": "Custom deviation %"},
-            {"label": "Compare Periods", "icon": "📊", "desc": "Month vs month"},
-        ]
-
-        actions_html = '<div class="metric-card">'
-        for a in actions:
-            actions_html += f"""
-            <div class="action-btn">
-                <span style="font-size:16px;">{a['icon']}</span>
-                <div>
-                    <div class="action-label">{a['label']}</div>
-                    <div class="action-desc">{a['desc']}</div>
-                </div>
-            </div>
-            """
-        actions_html += '</div>'
-        st.markdown(actions_html, unsafe_allow_html=True)
-
-        st.markdown("", unsafe_allow_html=True)
-
-        # Snapshot
-        snapshot_items = [
-            ("Invoices Sent", "12"),
-            ("Invoices Paid", "9"),
-            ("Avg Payment Time", "14 days"),
-            ("Headcount" if view_mode == "Board" else "Staff Hours", "15" if view_mode == "Board" else "1,240 hrs"),
-            ("Customer Acq. Cost", "€1,800"),
-        ]
-
-        snap_html = '<div class="snapshot-card"><div class="snapshot-title">This Month</div>'
-        for label, value in snapshot_items:
-            snap_html += f"""
-            <div class="snapshot-row">
-                <span class="snapshot-label">{label}</span>
-                <span class="snapshot-value">{value}</span>
-            </div>
-            """
-        snap_html += '</div>'
-        st.markdown(snap_html, unsafe_allow_html=True)
+            c_a, c_b, c_c = st.columns([0.5, 6, 2])
+            with c_a:
+                st.markdown(f"{'🟢' if is_in else '🔴'}")
+            with c_b:
+                st.markdown(f"**{row.get('Description', '')}**")
+                st.caption(str(row.get("Date", "")))
+            with c_c:
+                if is_in:
+                    st.markdown(f'<span style="color:#4CA771;font-weight:600;font-size:15px;">+€{amt:,.0f}</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown(f'<span style="color:#D94040;font-weight:600;font-size:15px;">-€{amt:,.0f}</span>', unsafe_allow_html=True)
+            st.divider()
+    else:
+        st.info("No cash flow data. Upload your template to see entries.")
 
 
-# ── Cash Flow Tab ──
-with tab_cashflow:
-    st.markdown('<div class="section-header">Monthly Cash Flow Analysis</div>', unsafe_allow_html=True)
+# ═══ REVENUE TAB ═══
+with tab_rv:
+    st.markdown("##### Revenue vs Expenses Over Time")
 
-    months_cf = ["Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
-    inflows = [38, 42, 39, 48, 44, 51]
-    outflows = [32, 35, 34, 38, 36, 39]
-    net = [i - o for i, o in zip(inflows, outflows)]
-
-    fig_cf = go.Figure()
-    fig_cf.add_trace(go.Bar(name="Inflows", x=months_cf, y=inflows, marker_color=ATU_GREEN, text=[f"€{v}K" for v in inflows], textposition="outside"))
-    fig_cf.add_trace(go.Bar(name="Outflows", x=months_cf, y=outflows, marker_color=ATU_RED, text=[f"€{v}K" for v in outflows], textposition="outside"))
-    fig_cf.add_trace(go.Scatter(name="Net", x=months_cf, y=net, mode="lines+markers", line=dict(color=ATU_TEAL, width=3), marker=dict(size=8)))
-    fig_cf.update_layout(
-        height=350, barmode="group", bargap=0.25,
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=20, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-        font=dict(family="Source Sans 3", color=ATU_TEXT_MID),
-        yaxis=dict(gridcolor="#EEF0F4", tickprefix="€", ticksuffix="K"),
-        xaxis=dict(tickfont=dict(size=12)),
-    )
-    st.plotly_chart(fig_cf, use_container_width=True, config={"displayModeBar": False})
+    if len(M["rev_hist"]) > 1:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=M["month_labels"], y=[v/1000 for v in M["rev_hist"]],
+            mode="lines+markers", name="Revenue", line=dict(color=ATU["green"], width=3), marker=dict(size=8),
+            fill="tozeroy", fillcolor="rgba(76,167,113,0.1)"))
+        fig.add_trace(go.Scatter(x=M["month_labels"], y=[v/1000 for v in M["exp_hist"]],
+            mode="lines+markers", name="Expenses", line=dict(color=ATU["red"], width=3), marker=dict(size=8)))
+        fig.update_layout(height=400, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            yaxis=dict(gridcolor="#EEF0F4", tickprefix="€", ticksuffix="K"),
+            margin=dict(l=20, r=20, t=20, b=40))
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.info("Upload at least 2 months of data to see trends.")
 
 
-# ── Revenue Tab ──
-with tab_revenue:
-    st.markdown('<div class="section-header">Revenue by Source</div>', unsafe_allow_html=True)
-
-    sources = ["Retail Sales", "Services", "Online", "Wholesale"]
-    rev_values = [22, 12, 7, 4]
-    fig_src = go.Figure(go.Bar(
-        x=rev_values, y=sources, orientation="h",
-        marker_color=[ATU_TEAL, ATU_GREEN, ATU_NAVY, ATU_TEXT_MUTED],
-        text=[f"€{v}K" for v in rev_values], textposition="outside",
-    ))
-    fig_src.update_layout(
-        height=250, margin=dict(l=10, r=40, t=10, b=10),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(visible=False), yaxis=dict(tickfont=dict(size=13, color=ATU_NAVY)),
-        showlegend=False, font=dict(family="Source Sans 3"),
-    )
-    st.plotly_chart(fig_src, use_container_width=True, config={"displayModeBar": False})
-
-
-# ── Alerts Tab ──
-with tab_alerts:
-    st.markdown('<div class="section-header">All Active Alerts</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div class="alert-row alert-danger">
-        <span>⚠</span>
-        <span><strong>Critical:</strong> Onboarding cost per customer hit €1,800 — target is €1,200</span>
-        <span class="alert-deviation">+50% vs plan</span>
-    </div>
-    <div class="alert-row alert-danger">
-        <span>⚠</span>
-        <span><strong>Critical:</strong> Supplier payment of €4,200 due Mar 12 — cash buffer tight</span>
-        <span class="alert-deviation">3 days</span>
-    </div>
-    <div class="alert-row alert-warning">
-        <span>◈</span>
-        <span><strong>Warning:</strong> New customer acquisitions at 6 of 10 target with 3 weeks left</span>
-        <span class="alert-deviation">-40% vs plan</span>
-    </div>
-    <div class="alert-row alert-warning">
-        <span>◈</span>
-        <span><strong>Warning:</strong> Cash runway projected at 8.2 months — below 12-month target</span>
-        <span class="alert-deviation">-32% vs plan</span>
-    </div>
-    <div class="alert-row alert-info">
-        <span>ℹ</span>
-        <span><strong>Info:</strong> Revenue trending 8% above forecast — consider restocking inventory</span>
-    </div>
-    <div class="alert-row alert-info">
-        <span>ℹ</span>
-        <span><strong>Info:</strong> Staff overtime hours up 15% — review scheduling efficiency</span>
-    </div>
-    """, unsafe_allow_html=True)
+# ═══ ALERTS TAB ═══
+with tab_al:
+    st.markdown("##### All Active Alerts")
+    count = 0
+    if M["expenses_change"] > 10:
+        st.error(f"**Critical:** Operating costs up {M['expenses_change']:.0f}% this month"); count += 1
+    if M["runway_months"] < 6:
+        st.error(f"**Critical:** Cash runway at {M['runway_months']} months — action needed"); count += 1
+    if M["runway_months"] < 12:
+        st.warning(f"**Warning:** Cash runway below 12-month target"); count += 1
+    if M["margin"] < 20:
+        st.warning(f"**Warning:** Profit margin at {M['margin']:.1f}%"); count += 1
+    if M["revenue_change"] > 5:
+        st.info(f"**Positive:** Revenue up {M['revenue_change']:.1f}% — strong growth"); count += 1
+    if M["revenue_change"] < -5:
+        st.error(f"**Critical:** Revenue declined {abs(M['revenue_change']):.1f}%"); count += 1
+    if count == 0:
+        st.success("All metrics within target ranges ✓")
 
 
-# ══════════════════════════════════════════════
-# FOOTER
-# ══════════════════════════════════════════════
-st.markdown("""
-<div class="footer">
-    <div><span class="footer-brand">SME Pulse</span> · A FunTech Project · Atlantic Technological University</div>
-    <div>Callum Kidd · 2026</div>
-</div>
-""", unsafe_allow_html=True)
+# ═══ DATA TAB ═══
+with tab_dt:
+    st.markdown("##### Your Data")
+    if src == "demo":
+        st.info("📋 **Demo Mode** — Upload data via sidebar to see your real metrics.")
+    elif src == "sheets":
+        st.success("✓ **Live** — Showing data from Google Sheets.")
+    else:
+        st.warning("📁 **Session only** — Connect Google Sheets for persistence.")
+
+    if not fin.empty:
+        st.markdown("**Monthly Financials**")
+        st.dataframe(fin, use_container_width=True, hide_index=True)
+    if not cf.empty:
+        st.markdown("**Cash Flow**")
+        st.dataframe(cf, use_container_width=True, hide_index=True)
+    if info:
+        st.markdown("**Business Profile**")
+        for k, v in info.items():
+            st.markdown(f"- **{k}:** {v}")
+
+
+# ═══ FOOTER ═══
+st.divider()
+f1, f2 = st.columns(2)
+with f1:
+    st.caption("**SME Pulse** · A FunTech Project · Atlantic Technological University")
+with f2:
+    st.markdown('<p style="text-align:right;font-size:12px;color:#8896AB;">Callum Kidd · 2026</p>', unsafe_allow_html=True)

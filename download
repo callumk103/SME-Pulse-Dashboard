@@ -1,8 +1,12 @@
-__pycache__/
-*.pyc
-.env
-.venv/
-venv/
-*.egg-info/
-.DS_Store
-.streamlit/secrets.toml
+[theme]
+primaryColor = "#00838A"
+backgroundColor = "#F7F8FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1B2A4A"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
